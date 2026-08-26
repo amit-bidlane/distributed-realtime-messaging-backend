@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # Matches docker/Dockerfile's `FROM python:3.13-slim`.
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - run: pip install -e ".[dev]"
+      - run: mypy app/
+
+  test:
+    runs-on: ubuntu-latest
+    # No Postgres/Redis service containers here on purpose: every test
+    # constructs its own Settings with an explicit SQLite (aiosqlite) +
+    # fakeredis override (see README's Testing section) rather than reading
+    # DATABASE_URL/REDIS_URL, so a real Postgres/Redis alongside the job
+    # would sit unused - added infrastructure and startup time for nothing
+    # actually exercised. If a future test needs to run against real
+    # Postgres/Redis (e.g. a dialect-specific behavior SQLite can't
+    # reproduce), add service containers back at that point, scoped to
+    # whichever job needs them.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+      - run: pip install -e ".[dev]"
+      - run: pytest -v --timeout=30 --timeout-method=thread
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Build-check only: proves docker/Dockerfile still produces a working
+      # image. No registry push and no deploy step - there is no deploy
+      # target for this project, and CD is explicitly out of scope.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: scalable-messaging-platform:ci

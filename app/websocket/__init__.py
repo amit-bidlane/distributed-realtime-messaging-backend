@@ -1,0 +1,1 @@
+"""WebSocket authentication entry point."""

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.venv-ci/
+venv/
+.env
+.env.*
+!.env.example
+*.db
+.pytest_cache/
+.pytest-tmp/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+node_modules/
+.DS_Store
+alembic/versions/__pycache__/

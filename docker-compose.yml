@@ -1,0 +1,118 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: messaging
+      POSTGRES_USER: messaging
+      POSTGRES_PASSWORD: messaging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U messaging -d messaging"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-off migration runner. Runs `alembic upgrade head` exactly once and
+  # exits; fastapi-1 and fastapi-2 both wait for it to *complete
+  # successfully* before they start (see their depends_on below), instead
+  # of each running its own `alembic upgrade head` on startup. Two
+  # instances migrating concurrently against a fresh database is a genuine
+  # race: both see no alembic_version table, both try to create it, and one
+  # loses with a UniqueViolationError. A single dedicated migration step
+  # removes the race instead of retrying around it.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://messaging:messaging@postgres:5432/messaging
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  fastapi-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://messaging:messaging@postgres:5432/messaging
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: development-only-jwt-secret-change-before-production
+      REFRESH_TOKEN_PEPPER: development-only-refresh-pepper-change-before-production
+    # No curl/wget in the python:3.13-slim base image (docker/Dockerfile), so
+    # the healthcheck uses the interpreter already there instead of adding a
+    # package just for this. Lets nginx's `condition: service_healthy` below
+    # wait for uvicorn to actually be serving /health, not just for the
+    # container process to have started - the same gap postgres/redis avoid
+    # via their own healthchecks above, now closed here too.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  fastapi-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://messaging:messaging@postgres:5432/messaging
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: development-only-jwt-secret-change-before-production
+      REFRESH_TOKEN_PEPPER: development-only-refresh-pepper-change-before-production
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      fastapi-1:
+        condition: service_healthy
+      fastapi-2:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
